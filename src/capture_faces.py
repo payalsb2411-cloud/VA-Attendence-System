@@ -1,10 +1,19 @@
 import argparse
 import csv
+import sys
 from datetime import datetime
 from pathlib import Path
 
 import cv2
 
+
+def get_app_root():
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
+ROOT_DIR = get_app_root()
 DEFAULT_SAMPLES = 5
 DEFAULT_CAMERA_INDEX = 0
 
@@ -95,8 +104,100 @@ def get_employee_info(args):
     return name, mobile, employee_id, role, company_name, logo_path
 
 
+def capture_employee(
+    name,
+    mobile,
+    employee_id,
+    role,
+    company_name,
+    logo_path,
+    samples=DEFAULT_SAMPLES,
+    camera_index=DEFAULT_CAMERA_INDEX,
+):
+    name = (name or "").strip()
+    mobile = sanitize_mobile(mobile or "")
+    employee_id = (employee_id or "").strip()
+    role = (role or "").strip()
+    company_name = (company_name or "").strip()
+    logo_path = (logo_path or "").strip()
+
+    if not name:
+        raise ValueError("Employee name cannot be empty.")
+    if len(mobile) < 10:
+        raise ValueError("Please enter a valid mobile number.")
+    if not employee_id:
+        raise ValueError("Employee ID cannot be empty.")
+    if not role:
+        raise ValueError("Role cannot be empty.")
+    if not company_name:
+        raise ValueError("Company name cannot be empty.")
+    if isinstance(samples, str):
+        samples = int(samples)
+    if samples < 1:
+        raise ValueError("Face samples must be greater than zero.")
+    if logo_path and not Path(logo_path).exists():
+        logo_path = ""
+
+    folder_name = f"{sanitize_name(name)}_{mobile}"
+    person_dir = ROOT_DIR / "data" / folder_name
+    person_dir.mkdir(parents=True, exist_ok=True)
+    upsert_employee(name, mobile, employee_id, role, company_name, logo_path)
+    print(f"Capturing for: {name} ({mobile})")
+
+    face_cascade = cv2.CascadeClassifier(
+        cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    )
+    cap = cv2.VideoCapture(camera_index)
+
+    if not cap.isOpened():
+        raise RuntimeError("Could not open camera. Check webcam permissions/index.")
+
+    count = 0
+    print("Press 'q' to quit early.")
+
+    try:
+        while count < samples:
+            ret, frame = cap.read()
+            if not ret:
+                continue
+
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.2, minNeighbors=5)
+
+            for (x, y, w, h) in faces:
+                face = gray[y : y + h, x : x + w]
+                file_path = person_dir / f"{folder_name}_{count:03d}.jpg"
+                cv2.imwrite(str(file_path), face)
+                count += 1
+
+                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 200, 0), 2)
+                cv2.putText(
+                    frame,
+                    f"Captured: {count}/{samples}",
+                    (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    (0, 255, 0),
+                    2,
+                )
+                break
+
+            cv2.imshow("Capture Faces", frame)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
+
+    append_capture_log(name, mobile, folder_name, count)
+    print(f"Saved {count} samples to {person_dir}")
+    print("Employee list CSV: data/employees.csv")
+    print("Capture log CSV: data/capture_log.csv")
+    return count
+
+
 def upsert_employee(name, mobile, employee_id, role, company_name, logo_path):
-    employees_file = Path("data") / "employees.csv"
+    employees_file = ROOT_DIR / "data" / "employees.csv"
     employees_file.parent.mkdir(parents=True, exist_ok=True)
 
     rows = []
@@ -141,7 +242,7 @@ def upsert_employee(name, mobile, employee_id, role, company_name, logo_path):
 
 
 def append_capture_log(name, mobile, folder_name, captured_count):
-    log_file = Path("data") / "capture_log.csv"
+    log_file = ROOT_DIR / "data" / "capture_log.csv"
     log_file.parent.mkdir(parents=True, exist_ok=True)
     file_exists = log_file.exists()
 
@@ -172,59 +273,15 @@ def append_capture_log(name, mobile, folder_name, captured_count):
 def main():
     args = parse_args()
     name, mobile, employee_id, role, company_name, logo_path = get_employee_info(args)
-    folder_name = f"{sanitize_name(name)}_{mobile}"
-    person_dir = Path("data") / folder_name
-    person_dir.mkdir(parents=True, exist_ok=True)
-    upsert_employee(name, mobile, employee_id, role, company_name, logo_path)
-    print(f"Capturing for: {name} ({mobile})")
-
-    face_cascade = cv2.CascadeClassifier(
-        cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    capture_employee(
+        name,
+        mobile,
+        employee_id,
+        role,
+        company_name,
+        logo_path,
+        samples=args.samples,
     )
-    cap = cv2.VideoCapture(DEFAULT_CAMERA_INDEX)
-
-    if not cap.isOpened():
-        raise RuntimeError("Could not open camera. Check webcam permissions/index.")
-
-    count = 0
-    print("Press 'q' to quit early.")
-
-    while count < args.samples:
-        ret, frame = cap.read()
-        if not ret:
-            continue
-
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.2, minNeighbors=5)
-
-        for (x, y, w, h) in faces:
-            face = gray[y : y + h, x : x + w]
-            file_path = person_dir / f"{folder_name}_{count:03d}.jpg"
-            cv2.imwrite(str(file_path), face)
-            count += 1
-
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 200, 0), 2)
-            cv2.putText(
-                frame,
-                f"Captured: {count}/{args.samples}",
-                (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (0, 255, 0),
-                2,
-            )
-            break
-
-        cv2.imshow("Capture Faces", frame)
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            break
-
-    cap.release()
-    cv2.destroyAllWindows()
-    append_capture_log(name, mobile, folder_name, count)
-    print(f"Saved {count} samples to {person_dir}")
-    print("Employee list CSV: data/employees.csv")
-    print("Capture log CSV: data/capture_log.csv")
 
 
 if __name__ == "__main__":

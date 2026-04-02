@@ -1,5 +1,6 @@
 import csv
 import json
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -7,8 +8,15 @@ import cv2
 import requests
 
 
-MODELS_DIR = Path("models")
-ATTENDANCE_DIR = Path("attendance")
+def get_app_root():
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
+ROOT_DIR = get_app_root()
+MODELS_DIR = ROOT_DIR / "models"
+ATTENDANCE_DIR = ROOT_DIR / "attendance"
 MODEL_FILE = MODELS_DIR / "face_trainer.yml"
 LABELS_FILE = MODELS_DIR / "labels.json"
 CONFIDENCE_THRESHOLD = 55
@@ -121,6 +129,79 @@ def preprocess_face(face_roi):
     return cv2.equalizeHist(resized)
 
 
+def start_attendance():
+    recognizer, labels = load_assets()
+    ATTENDANCE_DIR.mkdir(parents=True, exist_ok=True)
+
+    today_file = ATTENDANCE_DIR / f"attendance_{datetime.now().strftime('%Y%m%d')}.csv"
+    ensure_today_file(today_file)
+
+    face_cascade = cv2.CascadeClassifier(
+        cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    )
+    cap = cv2.VideoCapture(0)
+
+    if not cap.isOpened():
+        raise RuntimeError("Could not open camera.")
+
+    print("Press 'q' to quit.")
+
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                continue
+
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.2, minNeighbors=5)
+
+            for (x, y, w, h) in faces:
+                face_roi = gray[y : y + h, x : x + w]
+                processed_face = preprocess_face(face_roi)
+                label_id, confidence = recognizer.predict(processed_face)
+
+                if confidence < CONFIDENCE_THRESHOLD:
+                    name = labels.get(label_id, "unknown")
+                    color = (0, 220, 0)
+                    status_message, is_marked = mark_attendance(name, today_file)
+                else:
+                    name = "unknown"
+                    color = (0, 0, 255)
+                    status_message, is_marked = ("Face not recognized.", False)
+
+                cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
+                cv2.putText(
+                    frame,
+                    f"{name} ({confidence:.1f})",
+                    (x, y - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    color,
+                    2,
+                )
+
+                # Show clear user feedback and auto close when attendance is marked.
+                cv2.putText(
+                    frame,
+                    status_message,
+                    (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.65,
+                    (0, 255, 255),
+                    2,
+                )
+                if is_marked:
+                    show_status_and_exit(frame, status_message)
+                    return
+
+            cv2.imshow("Attendance - Face Recognition", frame)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
+
+
 def mark_attendance(name, file_path):
     rows = read_rows(file_path)
     now = datetime.now()
@@ -183,77 +264,7 @@ def mark_attendance(name, file_path):
 
 
 def main():
-    recognizer, labels = load_assets()
-    ATTENDANCE_DIR.mkdir(parents=True, exist_ok=True)
-
-    today_file = ATTENDANCE_DIR / f"attendance_{datetime.now().strftime('%Y%m%d')}.csv"
-    ensure_today_file(today_file)
-
-    face_cascade = cv2.CascadeClassifier(
-        cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-    )
-    cap = cv2.VideoCapture(0)
-
-    if not cap.isOpened():
-        raise RuntimeError("Could not open camera.")
-
-    print("Press 'q' to quit.")
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            continue
-
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.2, minNeighbors=5)
-
-        for (x, y, w, h) in faces:
-            face_roi = gray[y : y + h, x : x + w]
-            processed_face = preprocess_face(face_roi)
-            label_id, confidence = recognizer.predict(processed_face)
-
-            if confidence < CONFIDENCE_THRESHOLD:
-                name = labels.get(label_id, "unknown")
-                color = (0, 220, 0)
-                status_message, is_marked = mark_attendance(name, today_file)
-            else:
-                name = "unknown"
-                color = (0, 0, 255)
-                status_message, is_marked = ("Face not recognized.", False)
-
-            cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
-            cv2.putText(
-                frame,
-                f"{name} ({confidence:.1f})",
-                (x, y - 10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                color,
-                2,
-            )
-
-            # Show clear user feedback and auto close when attendance is marked.
-            cv2.putText(
-                frame,
-                status_message,
-                (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.65,
-                (0, 255, 255),
-                2,
-            )
-            if is_marked:
-                show_status_and_exit(frame, status_message)
-                cap.release()
-                cv2.destroyAllWindows()
-                return
-
-        cv2.imshow("Attendance - Face Recognition", frame)
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            break
-
-    cap.release()
-    cv2.destroyAllWindows()
+    start_attendance()
 
 
 if __name__ == "__main__":

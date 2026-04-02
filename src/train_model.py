@@ -1,13 +1,21 @@
 import json
 import csv
+import sys
 from pathlib import Path
 
 import cv2
 import numpy as np
 
 
-DATA_DIR = Path("data")
-MODELS_DIR = Path("models")
+def get_app_root():
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
+ROOT_DIR = get_app_root()
+DATA_DIR = ROOT_DIR / "data"
+MODELS_DIR = ROOT_DIR / "models"
 MODEL_FILE = MODELS_DIR / "face_trainer.yml"
 LABELS_FILE = MODELS_DIR / "labels.json"
 MIN_IMAGES_PER_PERSON = 5
@@ -30,6 +38,32 @@ def load_employee_lookup():
             if mobile and name:
                 lookup[mobile] = name
     return lookup
+
+
+def train_faces():
+    if not DATA_DIR.exists():
+        raise FileNotFoundError("No data folder found. Run capture_faces.py first.")
+
+    images, labels, label_map = load_training_data()
+    if not images:
+        raise RuntimeError("No training images found in data/.")
+    if len(label_map) < 2:
+        print(
+            "Warning: only one employee in training data. "
+            "Add more employees for reliable classification."
+        )
+
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    recognizer = cv2.face.LBPHFaceRecognizer_create()
+    recognizer.train(images, labels)
+    recognizer.save(str(MODEL_FILE))
+
+    with LABELS_FILE.open("w", encoding="utf-8") as f:
+        json.dump(label_map, f, indent=2)
+
+    print(f"Model saved to {MODEL_FILE}")
+    print(f"Labels saved to {LABELS_FILE}")
+    return MODEL_FILE, LABELS_FILE
 
 
 def label_display_name(folder_name, employee_lookup):
@@ -77,28 +111,7 @@ def load_training_data():
 
 
 def main():
-    if not DATA_DIR.exists():
-        raise FileNotFoundError("No data folder found. Run capture_faces.py first.")
-
-    images, labels, label_map = load_training_data()
-    if not images:
-        raise RuntimeError("No training images found in data/.")
-    if len(label_map) < 2:
-        print(
-            "Warning: only one employee in training data. "
-            "Add more employees for reliable classification."
-        )
-
-    MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    recognizer = cv2.face.LBPHFaceRecognizer_create()
-    recognizer.train(images, labels)
-    recognizer.save(str(MODEL_FILE))
-
-    with LABELS_FILE.open("w", encoding="utf-8") as f:
-        json.dump(label_map, f, indent=2)
-
-    print(f"Model saved to {MODEL_FILE}")
-    print(f"Labels saved to {LABELS_FILE}")
+    train_faces()
 
 
 if __name__ == "__main__":
